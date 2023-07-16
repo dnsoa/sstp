@@ -1,0 +1,205 @@
+#!/bin/bash
+
+export PATH="$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
+
+config_file='sstp.conf' # 可被命令行参数覆盖
+
+font_bold() {
+    printf "\e[1m$*\e[0m"
+}
+
+color_red() {
+    printf "\e[35m$*\e[0m"
+}
+
+color_green() {
+    printf "\e[32m$*\e[0m"
+}
+
+color_yellow() {
+    printf "\e[31m$*\e[0m"
+}
+
+# 打印错误消息，并退出脚本
+log_error() {
+    echo "$(font_bold $(color_yellow '[ERROR]')) $*" 1>&2
+    exit 1
+}
+
+command_is_exists() {
+    type -P "$1" &>/dev/null
+}
+
+command_required() {
+    command_is_exists "$1" || log_error "command not found: $1"
+}
+
+file_is_exists() {
+    [ -f "$1" ]
+}
+
+file_required() {
+    file_is_exists "$1" || log_error "file not found: $1"
+}
+group_is_exists() {
+    if is_uint "$1"; then # gid
+        grep -q ":$1:" /etc/group
+    else # name
+        grep -q "^$1:" /etc/group
+    fi
+}
+
+list_ext_ipv4() {
+    grep '^-' "$1" | cut -c2-
+}
+
+list_ext_ipv6() {
+    grep '^~' "$1" | cut -c2-
+}
+
+list_ext_domain() {
+    grep '^@' "$1" | cut -c2-
+}
+
+fetch_url() {
+    command_required 'curl'
+
+    local url="$1" filename="$2"
+
+    local data # 声明和赋值必须分开，不然错误码会丢失
+    data="$(set -o pipefail; curl -4fsSkL "$url" | grep -v -e '^[[:space:]]*$' -e '^[[:space:]]*#')" ||
+        log_error "download failed: $url (exit-code: $?)"
+
+    echo "$data" > $filename
+}
+
+parse_github() {
+    cat $file_github | python3 github.py
+}
+
+update_github() {
+    fetch_url $url_github $file_github
+    parse_github > $file_github_ip
+}
+
+parse_google() {
+    cat $file_google | python3 google.py
+}
+
+update_google() {
+    #fetch_url $url_google $file_google
+    parse_google > $file_google_ip
+}
+
+# str substr
+str_find() {
+    [[ "$1" == *"$2"* ]]
+}
+
+load_config() {
+    file_required $config_file
+
+    source $config_file "${arg_list[@]}" ||
+        log_error "$config_file load failed, exit-code: $?"
+}
+
+# setname <ip_list
+init_ipset() {
+    ipset create $1 hash:net family $(str_find $1 6 && echo inet6 || echo inet)
+    sed "s/^/add $1 /" | ipset -! restore
+}
+
+start_ipset() {
+        { list_ext_ipv4 $file_github_ip | list_ext_ipv4 -; } | init_ipset sstp_v4
+}
+
+start() {
+    # ss_tproxy_is_started && { stop; status; echo; }
+
+    # set_kernel_param
+    start_ipset # 先创建ipset
+    # start_proxyproc
+    # start_dnsserver
+    # start_iproute
+    # start_iptables
+
+    # call_func post_start
+
+    # # post_start后再保存pid等运行时状态到文件
+    # save_pidfile
+
+    # # post_start可能会添加规则到sstp_*，所以放到后面
+    # delete_unused_chain
+}
+
+status() {
+    echo ""
+}
+
+help() {
+    cat <<EOF
+Usage: sstp <COMMAND> ... [-x]
+COMMAND := {
+    start               start ss-tproxy
+    stop                stop ss-tproxy
+    restart             restart ss-tproxy
+    status              status of ss-tproxy
+    show-iptables       show iptables rules
+    flush-stoprule      flush stop rules
+    flush-dnscache      flush dns cache
+    update-github       update github ip list
+    update-google       update google ip list
+    update-chnroute     update chnroute.txt
+    set-proxy-group     set group for executable
+    set-dns-group       set group for executable
+    version             show version and exit
+    help                show help and exit
+}
+Specify the -x option to debug script
+EOF
+}
+
+main() {
+    local argv=("$@")
+     local arg_list=() #所有位置参数
+
+    for ((i = 0; i < ${#argv[@]}; ++i)); do
+        local arg="${argv[i]}"
+        case "$arg" in
+            -x) set -x;;
+            -c) config_file="${argv[++i]}";;
+            -*) echo "$(color_yellow "Unknown option: $arg")"; help; return 1;;
+            *) arg_list+=("$arg");;
+        esac
+    done
+
+    if [ "${#arg_list[@]}" -eq 0 ]; then
+        help
+        return 0
+    fi
+
+    # 先加载sstp.conf
+    load_config
+
+    case "${arg_list[0]}" in
+        start)           start; status;;
+        stop)            stop; status;;
+        r*)              stop; status; echo; start; status;;
+        stat*)           status;;
+        show*)           show_iptables;;
+        flush-stop*)     flush_stoprule;;
+        flush-dns*)      flush_dnscache;;
+        update-github)   update_github;;
+        update-google)   update_google;;
+        update-chnroute) update_chnroute;;
+        set-proxy-group) set_proxy_group "${arg_list[1]}";;
+        set-dns-group)   set_dns_group "${arg_list[1]}";;
+        v*)              version;;
+        h*)              help;;
+        *)               echo "$(color_yellow "Unknown command: ${arg_list[0]}")"; help; return 1;;
+    esac
+
+    return 0
+}
+
+main "$@"
