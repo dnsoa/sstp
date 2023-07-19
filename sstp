@@ -105,17 +105,17 @@ parse_github() {
 
 update_github() {
     fetch_url $url_github $file_github
-    (cat $file_github | python3 github.py) > $file_github_ip
+    (cat $file_github | python3 py/github.py) > $file_github_ip
 }
 
 update_google() {
     fetch_url $url_google $file_google
-    (cat $file_google | python3 google.py) > $file_google_ip
+    (cat $file_google | python3 py/google.py) > $file_google_ip
 }
 
 update_aws() {
     fetch_url $url_aws $file_aws
-    (cat $file_aws | python3 aws.py) > $file_aws_ip
+    (cat $file_aws | python3 py/aws.py) > $file_aws_ip
 }
 
 is_uint() {
