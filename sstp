@@ -105,16 +105,17 @@ parse_github() {
 
 update_github() {
     fetch_url $url_github $file_github
-    parse_github > $file_github_ip
-}
-
-parse_google() {
-    cat $file_google | python3 google.py
+    (cat $file_github | python3 github.py) > $file_github_ip
 }
 
 update_google() {
-    #fetch_url $url_google $file_google
-    parse_google > $file_google_ip
+    fetch_url $url_google $file_google
+    (cat $file_google | python3 google.py) > $file_google_ip
+}
+
+update_aws() {
+    fetch_url $url_aws $file_aws
+    (cat $file_aws | python3 aws.py) > $file_aws_ip
 }
 
 is_uint() {
@@ -158,9 +159,11 @@ init_ipset() {
 
 start_ipset() {
      is_enabled_ipv4 && list_ext_ipv4 $file_github_ip  | init_ipset sstp_v4
-     is_enabled_ipv4 && list_ext_ipv4 $file_google_ip  | init_ipset sstp_v4
      is_enabled_ipv6 && list_ext_ipv6 $file_github_ip  | init_ipset sstp_v6
+     is_enabled_ipv4 && list_ext_ipv4 $file_google_ip  | init_ipset sstp_v4
      is_enabled_ipv6 && list_ext_ipv6 $file_google_ip  | init_ipset sstp_v6
+     is_enabled_ipv4 && list_ext_ipv4 $file_aws_ip  | init_ipset sstp_v4
+     is_enabled_ipv6 && list_ext_ipv6 $file_aws_ip  | init_ipset sstp_v6
 }
 
 # 失败也不退出，避免逻辑执行不完整
@@ -207,12 +210,10 @@ _flush_iptables() {
 }
 
 flush_iptables() {
-    # 不做判断，防止相关配置改动导致残留
     _flush_iptables "iptables"
     _flush_iptables "ip6tables"
 }
 
-# stop就清空，如果只是换节点或重启代理，不要通过ss-tproxy进行，请直接操作代理进程
 flush_ipset() {
     for setname in $(ipset -n list | grep '^sstp_'); do
         ipset destroy $setname &>/dev/null
@@ -258,8 +259,10 @@ COMMAND := {
     stop                stop sstp
     restart             restart sstp
     show-iptables       show iptables rules
+    show-ipset          show ipset list
     update-github       update github ip list
     update-google       update google ip list
+    update-aws          update aws ip list
     addnetip            add netip to list
     set-proxy-group     set group for executable
     version             show version and exit
@@ -300,6 +303,7 @@ main() {
          show-ipset)     show_ipset;;
         update-github)   update_github;;
         update-google)   update_google;;
+        update-aws)      update_aws;;
         addnetip)        add_netip "${arg_list[1]}";;
         set-proxy-group) set_proxy_group "${arg_list[1]}";;
         v*)              version;;
