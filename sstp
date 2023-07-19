@@ -34,19 +34,45 @@ command_required() {
     command_is_exists "$1" || log_error "command not found: $1"
 }
 
-file_is_exists() {
-    [ -f "$1" ]
-}
-
-file_required() {
-    file_is_exists "$1" || log_error "file not found: $1"
-}
 group_is_exists() {
     if is_uint "$1"; then # gid
         grep -q ":$1:" /etc/group
     else # name
         grep -q "^$1:" /etc/group
     fi
+}
+
+create_group() {
+    if is_uint "$1"; then # gid
+        log_error "gid:'$1' not exists, please check proxy_procgroup"
+    elif command_is_exists groupadd; then
+        groupadd "$1" || log_error "failed to create group:'$1' via groupadd, exit-code: $?"
+    elif command_is_exists addgroup; then
+        addgroup "$1" || log_error "failed to create group:'$1' via addgroup, exit-code: $?"
+    else
+        log_error "group:'$1' not exists, and groupadd/addgroup are not found, please create it manually"
+    fi
+}
+
+# group command
+set_command_group() {
+    command_required "$2"
+    local group="$1" path="$(command_path "$2")"
+    chgrp "$group" "$path" || log_error "chgrp failed: group=$group path=$path"
+    chmod g+xs "$path"
+}
+
+# command
+set_proxy_group() {
+    set_command_group "$proxy_procgroup" "$1"
+}
+
+file_is_exists() {
+    [ -f "$1" ]
+}
+
+file_required() {
+    file_is_exists "$1" || log_error "file not found: $1"
 }
 
 list_ext_ipv4() {
@@ -91,6 +117,22 @@ update_google() {
     parse_google > $file_google_ip
 }
 
+is_uint() {
+    [ "$1" ] && [ -z "${1//[0-9]/}" ]
+}
+
+is_true() {
+    [ "$1" = 1 ]
+}
+
+is_enabled_ipv4() {
+    is_true "$ipv4_enable"
+}
+
+is_enabled_ipv6() {
+    is_true "$ipv6_enable"
+}
+
 # str substr
 str_find() {
     [[ "$1" == *"$2"* ]]
@@ -101,57 +143,125 @@ load_config() {
 
     source $config_file "${arg_list[@]}" ||
         log_error "$config_file load failed, exit-code: $?"
+
+    [ "$proxy_procgroup" -a "$proxy_procgroup" != 0 -a "$proxy_procgroup" != root ] ||
+        log_error "invalid config value for proxy_procgroup: '$proxy_procgroup'"
+
+    group_is_exists "$proxy_procgroup" || create_group "$proxy_procgroup"
 }
 
 # setname <ip_list
 init_ipset() {
-    ipset create $1 hash:net family $(str_find $1 6 && echo inet6 || echo inet)
+    ipset create -exist $1 hash:net family $(str_find $1 6 && echo inet6 || echo inet)
     sed "s/^/add $1 /" | ipset -! restore
 }
 
 start_ipset() {
-        { list_ext_ipv4 $file_github_ip | list_ext_ipv4 -; } | init_ipset sstp_v4
+     is_enabled_ipv4 && list_ext_ipv4 $file_github_ip  | init_ipset sstp_v4
+     is_enabled_ipv4 && list_ext_ipv4 $file_google_ip  | init_ipset sstp_v4
+     is_enabled_ipv6 && list_ext_ipv6 $file_github_ip  | init_ipset sstp_v6
+     is_enabled_ipv6 && list_ext_ipv6 $file_google_ip  | init_ipset sstp_v6
+}
+
+# 失败也不退出，避免逻辑执行不完整
+start_proxyproc() {
+    eval "$proxy_startcmd"
+}
+
+stop_proxyproc() {
+    eval "$proxy_stopcmd"
+}
+
+get_dst_port_match() {
+    [ "$proxy_dst_port" ] &&
+        echo "-m multiport --dports $proxy_dst_port"
+}
+
+is_ipv4_ipts() {
+    [ "$1" = 'iptables' ]
+}
+
+_start_iptables() {
+    if is_ipv4_ipts $1; then
+        setname="sstp_v4"
+        loopback_addrx="127.0.0.1"
+    else
+        setname="sstp_v6"
+        loopback_addrx="[::1]"
+    fi
+
+     $1 -t nat -I OUTPUT -m addrtype ! --dst-type LOCAL -m owner ! --gid-owner $proxy_procgroup -p tcp $(get_dst_port_match) -m set --match-set $setname dst -j DNAT --to-destination $loopback_addrx:$proxy_tcpport  -m comment --comment "SSTP"
+     #sudo iptables -t nat -I OUTPUT -m addrtype ! --dst-type LOCAL -m owner ! --gid-owner 13 -p tcp -m set --match-set sstp_v4 dst -j DNAT --to-destination 127.0.0.1:60080 -m comment --comment "FUCKGFW"
+
+}
+
+start_iptables() {
+    is_enabled_ipv4 && _start_iptables "iptables"
+    is_enabled_ipv6 && _start_iptables "ip6tables"
+}
+
+_flush_iptables() {
+    for n in $($1 -t nat -L OUTPUT --line-numbers|grep SSTP| cut -c1); do
+        $1 -t nat -D OUTPUT $n &>/dev/null
+    done
+}
+
+flush_iptables() {
+    # 不做判断，防止相关配置改动导致残留
+    _flush_iptables "iptables"
+    _flush_iptables "ip6tables"
+}
+
+# stop就清空，如果只是换节点或重启代理，不要通过ss-tproxy进行，请直接操作代理进程
+flush_ipset() {
+    for setname in $(ipset -n list | grep '^sstp_'); do
+        ipset destroy $setname &>/dev/null
+    done
+}
+
+_show_iptables() {
+    echo "$(color_green "==> $1-nat <==")"
+    $1 -t nat -S
+}
+
+show_iptables() {
+    is_enabled_ipv4 && _show_iptables "iptables"
+    { is_enabled_ipv4 && is_enabled_ipv6; } && echo
+    is_enabled_ipv6 && _show_iptables "ip6tables"
+}
+
+show_ipset() {
+    ipset -L
+}
+
+add_netip() {
+    ipset add $(str_find $1 6 && echo sstp_v6 || echo sstp_v4) $1
 }
 
 start() {
-    # ss_tproxy_is_started && { stop; status; echo; }
-
-    # set_kernel_param
     start_ipset # 先创建ipset
-    # start_proxyproc
-    # start_dnsserver
-    # start_iproute
-    # start_iptables
-
-    # call_func post_start
-
-    # # post_start后再保存pid等运行时状态到文件
-    # save_pidfile
-
-    # # post_start可能会添加规则到sstp_*，所以放到后面
-    # delete_unused_chain
+    start_proxyproc
+    start_iptables
 }
 
-status() {
-    echo ""
+stop() {
+    flush_iptables
+    stop_proxyproc
+    flush_ipset
 }
 
 help() {
     cat <<EOF
 Usage: sstp <COMMAND> ... [-x]
 COMMAND := {
-    start               start ss-tproxy
-    stop                stop ss-tproxy
-    restart             restart ss-tproxy
-    status              status of ss-tproxy
+    start               start sstp
+    stop                stop sstp
+    restart             restart sstp
     show-iptables       show iptables rules
-    flush-stoprule      flush stop rules
-    flush-dnscache      flush dns cache
     update-github       update github ip list
     update-google       update google ip list
-    update-chnroute     update chnroute.txt
+    addnetip            add netip to list
     set-proxy-group     set group for executable
-    set-dns-group       set group for executable
     version             show version and exit
     help                show help and exit
 }
@@ -182,18 +292,16 @@ main() {
     load_config
 
     case "${arg_list[0]}" in
-        start)           start; status;;
-        stop)            stop; status;;
-        r*)              stop; status; echo; start; status;;
+        start)           start;;
+        stop)            stop;;
+        r*)              stop; echo; start;;
         stat*)           status;;
-        show*)           show_iptables;;
-        flush-stop*)     flush_stoprule;;
-        flush-dns*)      flush_dnscache;;
+        show-iptables)   show_iptables;;
+         show-ipset)     show_ipset;;
         update-github)   update_github;;
         update-google)   update_google;;
-        update-chnroute) update_chnroute;;
+        addnetip)        add_netip "${arg_list[1]}";;
         set-proxy-group) set_proxy_group "${arg_list[1]}";;
-        set-dns-group)   set_dns_group "${arg_list[1]}";;
         v*)              version;;
         h*)              help;;
         *)               echo "$(color_yellow "Unknown command: ${arg_list[0]}")"; help; return 1;;
