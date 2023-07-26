@@ -100,22 +100,22 @@ fetch_url() {
 }
 
 parse_github() {
-    cat $file_github | python3 github.py
+    cat $github_file | python3 github.py
 }
 
 update_github() {
-    fetch_url $url_github $file_github
-    (cat $file_github | python3 py/github.py) > $file_github_ip
+    fetch_url $github_url $github_file
+    (cat $github_file | python3 py/github.py) > $github_file_ip
 }
 
 update_google() {
-    fetch_url $url_google $file_google
-    (cat $file_google | python3 py/google.py) > $file_google_ip
+    fetch_url $google_url $google_file
+    (cat $google_file | python3 py/google.py) > $google_file_ip
 }
 
 update_aws() {
-    fetch_url $url_aws $file_aws
-    (cat $file_aws | python3 py/aws.py) > $file_aws_ip
+    fetch_url $aws_url $aws_file
+    (cat $aws_file | python3 py/aws.py) > $aws_file_ip
 }
 
 is_uint() {
@@ -158,12 +158,14 @@ init_ipset() {
 }
 
 start_ipset() {
-     is_enabled_ipv4 && list_ext_ipv4 $file_github_ip  | init_ipset sstp_v4
-     is_enabled_ipv6 && list_ext_ipv6 $file_github_ip  | init_ipset sstp_v6
-     is_enabled_ipv4 && list_ext_ipv4 $file_google_ip  | init_ipset sstp_v4
-     is_enabled_ipv6 && list_ext_ipv6 $file_google_ip  | init_ipset sstp_v6
-     is_enabled_ipv4 && list_ext_ipv4 $file_aws_ip  | init_ipset sstp_v4
-     is_enabled_ipv6 && list_ext_ipv6 $file_aws_ip  | init_ipset sstp_v6
+     is_true "$github_enable" && is_enabled_ipv4 && list_ext_ipv4 $github_file_ip  | init_ipset sstp_v4
+     is_true "$github_enable" && is_enabled_ipv6 && list_ext_ipv6 $github_file_ip  | init_ipset sstp_v6
+     is_true "$google_enable" && is_enabled_ipv4 && list_ext_ipv4 $google_file_ip  | init_ipset sstp_v4
+     is_true "$google_enable" && is_enabled_ipv6 && list_ext_ipv6 $google_file_ip  | init_ipset sstp_v6
+     is_true "$aws_enable" && is_enabled_ipv4 && list_ext_ipv4 $aws_file_ip  | init_ipset sstp_v4
+     is_true "$aws_enable" && is_enabled_ipv6 && list_ext_ipv6 $aws_file_ip  | init_ipset sstp_v6
+     is_true "$custom_enable" && is_enabled_ipv4 && list_ext_ipv4 $custom_file_ip  | init_ipset sstp_v4
+     is_true "$custom_enable" && is_enabled_ipv6 && list_ext_ipv6 $custom_file_ip  | init_ipset sstp_v6
 }
 
 # 失败也不退出，避免逻辑执行不完整
