@@ -241,6 +241,13 @@ add_netip() {
     ipset add $(str_find $1 6 && echo sstp_v6 || echo sstp_v4) $1
 }
 
+add_globalip() {
+    for ip in "0.0.0.0/1" "128.0.0.0/2" "192.0.0.0/3" "224.0.0.0/4"
+    do
+        add_netip $ip
+    done
+}
+
 start() {
     start_ipset # 先创建ipset
     start_proxyproc
@@ -266,6 +273,7 @@ COMMAND := {
     update-google       update google ip list
     update-aws          update aws ip list
     addnetip            add netip to list
+    globalip            add all ips to list
     set-proxy-group     set group for executable
     version             show version and exit
     help                show help and exit
@@ -307,6 +315,7 @@ main() {
         update-google)   update_google;;
         update-aws)      update_aws;;
         addnetip)        add_netip "${arg_list[1]}";;
+        globalip)        add_globalip;;
         set-proxy-group) set_proxy_group "${arg_list[1]}";;
         v*)              version;;
         h*)              help;;
