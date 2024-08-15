@@ -2,6 +2,7 @@
 
 export PATH="$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
 
+base_dir='.' # 同时也是工作目录
 config_file='sstp.conf' # 可被命令行参数覆盖
 
 font_bold() {
@@ -238,14 +239,30 @@ show_ipset() {
 }
 
 add_netip() {
-    ipset add $(str_find $1 6 && echo sstp_v6 || echo sstp_v4) $1
+    # 检查输入是否为IP地址
+    if [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ $1 =~ ^[0-9a-fA-F:]+$ ]]; then
+        ipset add $(str_find $1 6 && echo sstp_v6 || echo sstp_v4) $1
+    else
+        # 输入为域名，获取解析记录
+        for ip in $(host $1 | awk '/has address/ { print $4 }'); do
+            ipset add sstp_v4 $ip
+        done
+        for ip in $(host $1 | awk '/has IPv6 address/ { print $5 }'); do
+            ipset add sstp_v6 $ip
+        done
+    fi
 }
 
+#这个将所有IP地址添加到ipset中，即全局代理
 add_globalip() {
     for ip in "0.0.0.0/1" "128.0.0.0/2" "192.0.0.0/3" "224.0.0.0/4"
     do
         add_netip $ip
     done
+}
+
+version() {
+    echo "ss-tproxy v1.0.0 (2024-08-15)"
 }
 
 start() {
@@ -290,11 +307,21 @@ main() {
         local arg="${argv[i]}"
         case "$arg" in
             -x) set -x;;
+            -d) base_dir="${argv[++i]}";;
             -c) config_file="${argv[++i]}";;
             -*) echo "$(color_yellow "Unknown option: $arg")"; help; return 1;;
             *) arg_list+=("$arg");;
         esac
     done
+
+    [ "$base_dir" ] ||
+        log_error "-d is specified, but no argument is given"
+
+    [ "$config_file" ] ||
+        log_error "-c is specified, but no argument is given"
+
+    cd -- "$base_dir" ||
+        log_error "base directory not exists: $base_dir"
 
     if [ "${#arg_list[@]}" -eq 0 ]; then
         help
